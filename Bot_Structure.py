@@ -8,116 +8,97 @@ import os
 from flask import Flask
 from threading import Thread
 
-# --- НАСТРОЙКИ ---
 TOKEN = '8249100655:AAFgvtY4AotMoJXyja75n4iS-g-M7hwMg18'
 PASSWORD = "jeka3131"
-VERSION = "v3.8 Armor Edition"
+VERSION = "v3.9 Fix Edition"
 AUTHOR = "𝕵𝖊𝖐𝖆"
 
-bot = telebot.TeleBot(TOKEN, threaded=True, num_threads=4)
+bot = telebot.TeleBot(TOKEN, threaded=True)
 app = Flask('')
 
 @app.route('/')
-def home(): return "Бот работает 24/7"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=os.getenv("PORT", 8080))
+def home(): return "OK"
 
 def keep_alive():
-    t = Thread(target=run_flask)
+    t = Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080))))
     t.daemon = True
     t.start()
 
 user_data = {}
 
-# Пункт 7: Уникализация текста
 def unique_text(text):
-    if not text: return text
     chars = {'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x'}
-    letters = list(text)
-    for i in range(len(letters)):
-        if letters[i].lower() in chars and random.random() < 0.15:
-            new_char = chars[letters[i].lower()]
-            letters[i] = new_char.upper() if letters[i].isupper() else new_char
-    return "".join(letters)
-
-def main_markup():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("🚀 Новый запрос"), types.KeyboardButton("🔄 Ещё варианты"))
-    return markup
+    return "".join([chars.get(c.lower(), c) if random.random() < 0.1 else c for c in text])
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    try:
-        bot.send_message(message.chat.id, f"⚙️ **SYSTEM ONLINE**\nВерсия: `{VERSION}`\nАвтор: `{AUTHOR}`\n\nВведите пароль:")
-        bot.register_next_step_handler(message, check_password)
-    except: pass
+    bot.send_message(message.chat.id, f"⚙️ {VERSION}\nАвтор: {AUTHOR}\nПароль:")
+    bot.register_next_step_handler(message, check_password)
 
 def check_password(message):
     if message.text == PASSWORD:
-        bot.send_message(message.chat.id, f"✅ **ДОСТУП ОТКРЫТ**\nДобро пожаловать, {AUTHOR}", reply_markup=main_markup())
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("🚀 Новый запрос", "🔄 Ещё варианты")
+        bot.send_message(message.chat.id, "✅ Доступ разрешен", reply_markup=markup)
     else:
-        bot.send_message(message.chat.id, "❌ Отказ. Еще раз:")
-        bot.register_next_step_handler(message, check_password)
+        bot.register_next_step_handler(bot.send_message(message.chat.id, "❌ Нет. Еще раз:"), check_password)
 
 @bot.message_handler(func=lambda m: m.text == "🚀 Новый запрос")
-def start_form(message):
-    bot.send_message(message.chat.id, "👤 Введите ФИО:", reply_markup=types.ReplyKeyboardRemove())
-    bot.register_next_step_handler(message, process_fio)
+def ask_fio(message):
+    bot.send_message(message.chat.id, "👤 ФИО:", reply_markup=types.ReplyKeyboardRemove())
+    bot.register_next_step_handler(message, lambda m: save_data(m, 'fio', "💼 Должность:", ask_post))
 
-def process_fio(message):
-    user_data[message.chat.id] = {'fio': message.text}
-    bot.send_message(message.chat.id, "💼 Должность:")
-    bot.register_next_step_handler(message, process_post)
+def ask_post(message):
+    save_data(message, 'post', "🏫 Организация:", ask_org)
 
-def process_post(message):
-    user_data[message.chat.id]['post'] = message.text
-    bot.send_message(message.chat.id, "🏫 Организация:")
-    bot.register_next_step_handler(message, process_org)
+def ask_org(message):
+    save_data(message, 'org', "⚡ Генерирую...", generate_ai)
 
-def process_org(message):
-    user_data[message.chat.id]['org'] = message.text
-    generate_ai(message)
+def save_data(message, key, next_text, next_step):
+    user_data.setdefault(message.chat.id, {})[key] = message.text
+    bot.send_message(message.chat.id, next_text)
+    bot.register_next_step_handler(message, next_step)
 
-@bot.message_handler(func=lambda m: m.text == "🔄 Ещё варианты")
 def generate_ai(message):
     chat_id = message.chat.id
-    if chat_id not in user_data:
-        bot.send_message(chat_id, "Сначала введите данные!")
-        return
-
-    bot.send_message(chat_id, "🛡️ **Генерация Anti-Ban...**")
-    data = user_data[chat_id]
-    headers = ["Представляюсь", "Разрешите представиться", "Меня зовут", "Я", "С вами", "Позвольте представиться", "Моё имя", "Представляю себя", "К вам обращается", "Хотел бы представиться", "Позвольте назвать себя", "Обращаюсь к вам", "Я являюсь", "Приветствую вас", "С вами на связи", "Давайте познакомимся", "Кратко о себе", "Могу представиться", "Считаю нужным представиться", "Для начала представлюсь"]
+    if chat_id not in user_data or 'org' not in user_data[chat_id]:
+        user_data.setdefault(chat_id, {})['org'] = message.text
     
-    prompt = f"Напиши ровно 20 строк. Каждая с нового слова: {', '.join(headers)}. Данные: {data['fio']}, {data['post']}, {data['org']}. Всё в РОДИТЕЛЬНОМ ПАДЕЖЕ. Только список."
+    d = user_data[chat_id]
+    headers = [
+        "Представляюсь", "Разрешите представиться", "Меня зовут", "Я", "С вами",
+        "Позвольте представиться", "Моё имя", "Представляю себя", "К вам обращается",
+        "Хотел бы представиться", "Позвольте назвать себя", "Обращаюсь к вам",
+        "Я являюсь", "Приветствую вас", "С вами на связи", "Давайте познакомимся",
+        "Кратко о себе", "Могу представиться", "Считаю нужным представиться", "Для начала представлюсь"
+    ]
+    
+    # Теперь мы просим ИИ ТОЛЬКО правильно склонить ФИО и должность
+    prompt = f"Склони в родительный падеж: {d['fio']} и {d['post']}. Напиши результат строго в одну строку через запятую. Например: Иванова Ивана Ивановича, директора."
 
-    # Функция вызова нейросети обернута в try
-    def ask_ai():
+    def ask():
         try:
-            return g4f.ChatCompletion.create(model=g4f.models.default, messages=[{"role": "user", "content": prompt}])
-        except Exception as e:
-            return f"Error: {e}"
+            res = g4f.ChatCompletion.create(model=g4f.models.default, messages=[{"role":"user","content":prompt}])
+            # Если ИИ ответил, склеиваем вручную для гарантии
+            parts = res.replace('.', '').split(',')
+            fio_sklon = parts[0].strip()
+            post_sklon = parts[1].strip() if len(parts) > 1 else d['post']
+            
+            final_list = []
+            for i, h in enumerate(headers):
+                line = f"{i+1}. {h}, {fio_sklon}, {post_sklon} {d['org']}."
+                final_list.append(unique_text(line))
+            return "\n".join(final_list)
+        except: return None
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(ask_ai)
+    with concurrent.futures.ThreadPoolExecutor() as ex:
         try:
-            res = future.result(timeout=30)
-            if res and "Error" not in res:
-                bot.send_message(chat_id, unique_text(res), reply_markup=main_markup())
-            else:
-                bot.send_message(chat_id, "⚠️ Сбой нейросети. Жми 'Ещё варианты'.", reply_markup=main_markup())
-        except Exception:
-            bot.send_message(chat_id, "⚠️ Время вышло. Попробуй снова.", reply_markup=main_markup())
+            final_res = ex.submit(ask).result(timeout=30)
+            bot.send_message(chat_id, final_res or "⚠️ Ошибка. Жми 'Ещё варианты'")
+        except:
+            bot.send_message(chat_id, "⚠️ Тайм-аут")
 
-# ГЛАВНЫЙ ЦИКЛ С ПЕРЕЗАГРУЗКОЙ ПОСЛЕ ВЫЛЕТА
 if __name__ == '__main__':
     keep_alive()
-    print(f"Бот {VERSION} запущен...")
-    while True:
-        try:
-            bot.polling(none_stop=True, interval=0, timeout=60)
-        except Exception as e:
-            print(f"Критический сбой: {e}")
-            time.sleep(5) # Пауза перед авто-рестартом
-
+    bot.polling(none_stop=True)
+    
