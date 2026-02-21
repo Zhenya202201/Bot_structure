@@ -1,104 +1,141 @@
-import telebot
-from telebot import types
-import g4f
-import time
-import concurrent.futures
-import random
+import logging
 import os
-from flask import Flask
-from threading import Thread
+import re
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import FSInputFile
 
-TOKEN = '8249100655:AAFgvtY4AotMoJXyja75n4iS-g-M7hwMg18'
-PASSWORD = "jeka3131"
-VERSION = "v3.9 Fix Edition"
-AUTHOR = "𝕵𝖊𝖐𝖆"
+# --- НАСТРОЙКИ ---
+API_TOKEN = '8249100655:AAFgvtY4AotMoJXyja75n4iS-g-M7hwMg18'
 
-bot = telebot.TeleBot(TOKEN, threaded=True)
-app = Flask('')
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 
-@app.route('/')
-def home(): return "OK"
+TRANSLIT_MAP = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ы':'y','э':'e','ю':'yu','я':'ya'}
 
-def keep_alive():
-    t = Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080))))
-    t.daemon = True
-    t.start()
+def to_latin(text):
+    return "".join(TRANSLIT_MAP.get(c, c) for c in text.lower())
 
-user_data = {}
+def clean_phone_format(line):
+    line = re.sub(r'\(\d{4}-\d{2}-\d{2}.*?\)', '', line)
+    line = re.sub(r'\s*-\s*', '-', line)
+    return line.replace('\n', '').replace('\r', '').strip()
 
-def unique_text(text):
-    chars = {'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x'}
-    return "".join([chars.get(c.lower(), c) if random.random() < 0.1 else c for c in text])
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, f"⚙️ {VERSION}\nАвтор: {AUTHOR}\nПароль:")
-    bot.register_next_step_handler(message, check_password)
-
-def check_password(message):
-    if message.text == PASSWORD:
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("🚀 Новый запрос", "🔄 Ещё варианты")
-        bot.send_message(message.chat.id, "✅ Доступ разрешен", reply_markup=markup)
-    else:
-        bot.register_next_step_handler(bot.send_message(message.chat.id, "❌ Нет. Еще раз:"), check_password)
-
-@bot.message_handler(func=lambda m: m.text == "🚀 Новый запрос")
-def ask_fio(message):
-    bot.send_message(message.chat.id, "👤 ФИО:", reply_markup=types.ReplyKeyboardRemove())
-    bot.register_next_step_handler(message, lambda m: save_data(m, 'fio', "💼 Должность:", ask_post))
-
-def ask_post(message):
-    save_data(message, 'post', "🏫 Организация:", ask_org)
-
-def ask_org(message):
-    save_data(message, 'org', "⚡ Генерирую...", generate_ai)
-
-def save_data(message, key, next_text, next_step):
-    user_data.setdefault(message.chat.id, {})[key] = message.text
-    bot.send_message(message.chat.id, next_text)
-    bot.register_next_step_handler(message, next_step)
-
-def generate_ai(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data or 'org' not in user_data[chat_id]:
-        user_data.setdefault(chat_id, {})['org'] = message.text
+def process_data(input_text):
+    blocks = re.split(r'-{10,}', input_text)
+    final_result = []
+    logs = []
     
-    d = user_data[chat_id]
-    headers = [
-        "Представляюсь", "Разрешите представиться", "Меня зовут", "Я", "С вами",
-        "Позвольте представиться", "Моё имя", "Представляю себя", "К вам обращается",
-        "Хотел бы представиться", "Позвольте назвать себя", "Обращаюсь к вам",
-        "Я являюсь", "Приветствую вас", "С вами на связи", "Давайте познакомимся",
-        "Кратко о себе", "Могу представиться", "Считаю нужным представиться", "Для начала представлюсь"
-    ]
+    total_in = 0
+    clean_out = 0
+    deleted_no_match = 0
     
-    # Теперь мы просим ИИ ТОЛЬКО правильно склонить ФИО и должность
-    prompt = f"Склони в родительный падеж: {d['fio']} и {d['post']}. Напиши результат строго в одну строку через запятую. Например: Иванова Ивана Ивановича, директора."
+    idx = 1
+    for block in blocks:
+        block = block.strip()
+        if not block or "ИМЯ:" not in block: continue
+        
+        total_in += 1
+        name_match = re.search(r'ИМЯ:\s*(.*)', block)
+        full_name = name_match.group(1).strip() if name_match else "Unknown"
+        
+        # Данные для поиска
+        name_parts = [p.lower() for p in re.findall(r'\w+', full_name) if len(p) > 2]
+        latin_variants = [to_latin(p) for p in name_parts]
+        all_variants = set(name_parts + latin_variants)
+        
+        raw_phones = re.findall(r'(\+7\d{10}.+)', block)
+        best_candidate = None
+        max_score = -1
 
-    def ask():
-        try:
-            res = g4f.ChatCompletion.create(model=g4f.models.default, messages=[{"role":"user","content":prompt}])
-            # Если ИИ ответил, склеиваем вручную для гарантии
-            parts = res.replace('.', '').split(',')
-            fio_sklon = parts[0].strip()
-            post_sklon = parts[1].strip() if len(parts) > 1 else d['post']
+        for p_line in raw_phones:
+            p_clean = clean_phone_format(p_line)
+            p_lower = p_clean.lower()
             
-            final_list = []
-            for i, h in enumerate(headers):
-                line = f"{i+1}. {h}, {fio_sklon}, {post_sklon} {d['org']}."
-                final_list.append(unique_text(line))
-            return "\n".join(final_list)
-        except: return None
+            # Проверка на совпадение
+            has_match = any(v in p_lower for v in all_variants)
+            strangers = ['viktor','ivan','sergey','dmitry','alexey','vladimir','nikolay']
+            is_stranger = any(s in p_lower for s in strangers if s not in all_variants)
 
-    with concurrent.futures.ThreadPoolExecutor() as ex:
-        try:
-            final_res = ex.submit(ask).result(timeout=30)
-            bot.send_message(chat_id, final_res or "⚠️ Ошибка. Жми 'Ещё варианты'")
-        except:
-            bot.send_message(chat_id, "⚠️ Тайм-аут")
+            if has_match and not is_stranger:
+                score = 10 if ('@' in p_lower and '@none' not in p_lower) else 5
+                if score > max_score:
+                    max_score = score
+                    best_candidate = p_clean
+
+        if best_candidate:
+            # Парсим остальные поля
+            dob = re.search(r'Дата Рождения:\s*(.*)', block)
+            income = re.search(r'Сумма годового дохода:\s*(.*)', block)
+            
+            res_block = (
+                f"{idx}. ИМЯ: {full_name}\n"
+                f"Дата Рождения: {dob.group(1).strip() if dob else ''}\n"
+                f"Номер телефона: {best_candidate}\n"
+                f"Сумма годового дохода: {income.group(1).strip() if income else '0'}\n"
+                "------------------------------------------"
+            )
+            final_result.append(res_block)
+            idx += 1
+            clean_out += 1
+        else:
+            deleted_no_match += 1
+            logs.append(f"УДАЛЕНО: {full_name} (Не найдено подходящего номера)")
+
+    # Считаем процент
+    percent = (clean_out / total_in * 100) if total_in > 0 else 0
+    stats = (
+        f"📊 **СТАТИСТИКА ОБРАБОТКИ**\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"📥 Всего блоков: {total_in}\n"
+        f"✅ Чистых контактов: {clean_out}\n"
+        f"❌ Удалено (не совпали): {deleted_no_match}\n"
+        f"📈 Эффективность: {percent:.1f}%\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+    
+    return '\n'.join(final_result), '\n'.join(logs), stats
+
+@dp.message(F.document)
+async def handle_docs(message: types.Message):
+    if not message.document.file_name.endswith('.txt'):
+        return await message.answer("Пришли .txt файл")
+
+    msg = await message.answer("⌛ Обрабатываю базу...")
+    
+    file_id = message.document.file_id
+    file = await bot.get_file(file_id)
+    
+    if not os.path.exists('temp'): os.makedirs('temp')
+    input_path = f"temp/in_{message.document.file_name}"
+    await bot.download_file(file.file_path, input_path)
+
+    with open(input_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    result_txt, log_txt, stats_msg = process_data(content)
+    
+    # Сохраняем результат и лог
+    res_path = f"temp/cleaned_{message.document.file_name}"
+    log_path = f"temp/log_{message.document.file_name}"
+    
+    with open(res_path, 'w', encoding='utf-8') as f: f.write(result_txt)
+    with open(log_path, 'w', encoding='utf-8') as f: f.write(log_txt)
+
+    # Отправляем файлы
+    await message.answer_document(FSInputFile(res_path), caption="📁 Очищенная база")
+    await message.answer_document(FSInputFile(log_path), caption="📝 Лог удаления")
+    await message.answer(stats_msg, parse_mode="Markdown")
+
+    # Чистим временные файлы
+    for p in [input_path, res_path, log_path]: 
+        if os.path.exists(p): os.remove(p)
+    await msg.delete()
+
+@dp.message()
+async def welcome(message: types.Message):
+    await message.answer("Пришли файл .txt для глубокой чистки.")
 
 if __name__ == '__main__':
-    keep_alive()
-    bot.polling(none_stop=True)
-    
+    import asyncio
+    asyncio.run(dp.start_polling(bot))
